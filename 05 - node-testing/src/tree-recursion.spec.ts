@@ -1,15 +1,5 @@
 import {normalizeOutput, printTree, TreeNode} from "./tree-recursion";
 
-// describe('Функция normalizeOutput', () => {
-//     test('должна удалять пробелы в начале строки и в конце', () => {
-//         const str = ' text string   '
-//
-//         const result = normalizeOutput(str);
-//
-//         expect(result).toEqual('text string');
-//     })
-// })
-
 describe('Нормализация вывода', () => {
     describe('когда передается строка с пробелами', () => {
         it('должна возвращать строку без начальных и конечных пробелов', () => {
@@ -31,67 +21,6 @@ describe('Нормализация вывода', () => {
         });
     });
 });
-
-// describe('Функция printTree', () => {
-//     let consoleSpy: jest.SpyInstance;
-//
-//     beforeEach(() => {
-//         consoleSpy = jest.spyOn(console, 'log').mockImplementation();
-//     });
-//
-//     afterEach(() => {
-//         consoleSpy.mockRestore();
-//     });
-//
-//     test('должна выводить корневой узел', () => {
-//         const tree: TreeNode = { name: 'root' };
-//
-//         printTree(tree);
-//
-//         expect(consoleSpy).toHaveBeenCalledWith('└── root');
-//     });
-//
-//     test('должна выводить дерево с вложенными элементами', () => {
-//         const tree: TreeNode = {
-//             name: 1,
-//             items: [
-//                 { name: 2 },
-//                 { name: 3 }
-//             ]
-//         };
-//
-//         printTree(tree);
-//
-//         expect(consoleSpy).toHaveBeenCalledTimes(3);
-//         expect(consoleSpy).toHaveBeenNthCalledWith(1, '└── 1');
-//         expect(consoleSpy).toHaveBeenNthCalledWith(2, '    ├── 2');
-//         expect(consoleSpy).toHaveBeenNthCalledWith(3, '    └── 3');
-//     });
-//
-//     test('должна обрабатывать сложные вложенные структуры', () => {
-//         const tree: TreeNode = {
-//             name: 'A',
-//             items: [
-//                 {
-//                     name: 'B',
-//                     items: [
-//                         { name: 'C' },
-//                         { name: 'D' }
-//                     ]
-//                 },
-//                 { name: 'E' }
-//             ]
-//         };
-//
-//         printTree(tree);
-//
-//         expect(consoleSpy).toHaveBeenCalledWith('└── A');
-//         expect(consoleSpy).toHaveBeenCalledWith('    ├── B');
-//         expect(consoleSpy).toHaveBeenCalledWith('    │   ├── C');
-//         expect(consoleSpy).toHaveBeenCalledWith('    │   └── D');
-//         expect(consoleSpy).toHaveBeenCalledWith('    └── E');
-//     });
-// });
 
 describe('Визуализация дерева', () => {
     let consoleSpy: jest.SpyInstance;
