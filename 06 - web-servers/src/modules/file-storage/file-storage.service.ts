@@ -1,17 +1,24 @@
+// file-storage.service.ts
 import {
     S3Client,
     PutObjectCommand,
     DeleteObjectCommand,
     ListObjectsV2Command
 } from "@aws-sdk/client-s3";
-import { config, isSelectelConfigured, getSelectelPublicUrl } from '../../config/config';
+import { config, isSelectelConfigured, getSelectelPublicUrl } from '../../config';
 import { UploadedFile, UploadOptions, MulterS3File } from './file-storage.types';
+import { FILE_STORAGE_MESSAGES } from './file-storage.constants';
+import { AppError } from '../../utils/errors';
 
 export class FileStorageService {
     private s3Client: S3Client | null = null;
 
     constructor() {
         if (isSelectelConfigured()) {
+            if (!config.selectel.accessKeyId || !config.selectel.secretAccessKey) {
+                return;
+            }
+
             this.s3Client = new S3Client({
                 region: config.selectel.region,
                 endpoint: config.selectel.endpoint,
@@ -25,34 +32,61 @@ export class FileStorageService {
     }
 
     /**
+     * Безопасное получение S3 клиента
+     */
+    private getS3Client(): S3Client {
+        if (!this.s3Client) {
+            throw new AppError(500, FILE_STORAGE_MESSAGES.ERROR.S3_CLIENT_NOT_INITIALIZED);
+        }
+        return this.s3Client;
+    }
+
+    /**
+     * Преобразование неизвестной ошибки в читаемое сообщение
+     */
+    private getErrorMessage(error: unknown): string {
+        if (error instanceof Error) return error.message;
+        if (typeof error === 'string') return error;
+        if (error && typeof error === 'object' && 'message' in error) {
+            return String((error as any).message);
+        }
+        return `${FILE_STORAGE_MESSAGES.ERROR.UNKNOWN_ERROR_FORMAT} (тип: ${typeof error})`;
+    }
+
+    /**
+     * Получение stack trace ошибки
+     */
+    private getErrorStack(error: unknown): string | undefined {
+        if (error instanceof Error) return error.stack;
+        return undefined;
+    }
+
+    /**
      * Удаление всей папки урока из S3
      */
     async deleteLessonFolder(lessonId: string): Promise<void> {
         if (!isSelectelConfigured() || !this.s3Client) {
-            console.log('Selectel не настроен, пропускаем удаление папки урока');
             return;
         }
 
         const folder = `lessons/${lessonId}/`;
-        console.log(`Удаление папки урока: ${folder}`);
 
         try {
-            // 1. Получаем список всех файлов в папке
+            const s3Client = this.getS3Client();
+
+            // Получаем список всех файлов в папке
             const listCommand = new ListObjectsV2Command({
                 Bucket: config.selectel.bucketName,
                 Prefix: folder,
             });
 
-            const listResult = await this.s3Client.send(listCommand);
+            const listResult = await s3Client.send(listCommand);
 
             if (!listResult.Contents || listResult.Contents.length === 0) {
-                console.log(`Папка урока ${folder} пуста`);
                 return;
             }
 
-            console.log(`Найдено файлов для удаления: ${listResult.Contents.length}`);
-
-            // 2. Удаляем каждый файл по отдельности
+            // Удаляем каждый файл по отдельности
             const deletePromises = listResult.Contents.map(async (object) => {
                 try {
                     const deleteCommand = new DeleteObjectCommand({
@@ -60,23 +94,26 @@ export class FileStorageService {
                         Key: object.Key!,
                     });
 
-                    await this.s3Client!.send(deleteCommand);
-                    console.log(`✓ Удален: ${object.Key}`);
+                    await s3Client.send(deleteCommand);
                     return true;
                 } catch (error) {
-                    console.error(`✗ Ошибка удаления ${object.Key}:`, error);
+                    console.warn(
+                        `${FILE_STORAGE_MESSAGES.WARN.INDIVIDUAL_FILE_DELETE_FAILED} ${object.Key}:`,
+                        this.getErrorMessage(error)
+                    );
                     return false;
                 }
             });
 
-            // 3. Ждем завершения всех операций удаления
-            const results = await Promise.all(deletePromises);
-            const successCount = results.filter(Boolean).length;
-
-            console.log(`Удаление завершено: ${successCount}/${listResult.Contents.length} файлов`);
+            await Promise.all(deletePromises);
 
         } catch (error) {
-            console.error('Ошибка при удалении папки урока:', error);
+            throw new AppError(500, FILE_STORAGE_MESSAGES.ERROR.FOLDER_DELETE_FAILED, {
+                lessonId,
+                folder,
+                originalError: this.getErrorMessage(error),
+                stack: this.getErrorStack(error)
+            });
         }
     }
 
@@ -90,12 +127,8 @@ export class FileStorageService {
         const { folder, contentType } = options;
         const filename = options.filename || `file-${Date.now()}`;
 
-        console.log(`Начало загрузки файла: ${filename} в папку: ${folder}`);
-
         if (!isSelectelConfigured() || !this.s3Client) {
-            console.warn('Selectel не настроен, используем mock storage');
             const mockUrl = `mock://${folder}/${filename}`;
-            console.log(`Mock URL: ${mockUrl}`);
             return {
                 url: mockUrl,
                 originalName: filename,
@@ -109,10 +142,9 @@ export class FileStorageService {
         const safeFileName = filename.replace(/[^a-zA-Z0-9.-]/g, '_');
         const key = `${folder}/${timestamp}-${randomString}-${safeFileName}`;
 
-        console.log(`Загрузка в S3: ${key}`);
-        console.log(`Bucket: ${config.selectel.bucketName}, ContentType: ${contentType}`);
-
         try {
+            const s3Client = this.getS3Client();
+
             const command = new PutObjectCommand({
                 Bucket: config.selectel.bucketName,
                 Key: key,
@@ -120,11 +152,9 @@ export class FileStorageService {
                 ContentType: contentType,
             });
 
-            const result = await this.s3Client.send(command);
-            console.log('S3 upload result:', result);
+            await s3Client.send(command);
 
             const url = getSelectelPublicUrl(key);
-            console.log(`Файл успешно загружен в S3: ${url}`);
 
             return {
                 url,
@@ -133,8 +163,14 @@ export class FileStorageService {
                 mimeType: contentType
             };
         } catch (error) {
-            console.error('Ошибка загрузки в S3:', error);
-            throw error;
+            throw new AppError(500, FILE_STORAGE_MESSAGES.ERROR.UPLOAD_FAILED, {
+                filename,
+                folder,
+                contentType,
+                key,
+                originalError: this.getErrorMessage(error),
+                stack: this.getErrorStack(error)
+            });
         }
     }
 
@@ -164,18 +200,8 @@ export class FileStorageService {
         multerFile: MulterS3File,
         lessonId: string
     ): Promise<UploadedFile> {
-        console.log('Обработка multer файла:', {
-            originalname: multerFile.originalname,
-            location: multerFile.location,
-            key: multerFile.key,
-            size: multerFile.size,
-            mimetype: multerFile.mimetype,
-            buffer: !!multerFile.buffer
-        });
-
         // Если файл уже загружен через multer-s3 (автоматическая загрузка)
         if (multerFile.location && multerFile.key) {
-            console.log('Файл уже загружен через multer-s3:', multerFile.location);
             return {
                 url: multerFile.location,
                 originalName: multerFile.originalname,
@@ -186,7 +212,6 @@ export class FileStorageService {
 
         // Если файл в памяти (при использовании memoryStorage)
         if (multerFile.buffer) {
-            console.log('Загрузка файла из memory buffer');
             return this.uploadLessonFile(
                 multerFile.buffer,
                 lessonId,
@@ -197,7 +222,6 @@ export class FileStorageService {
 
         // Если файл загружен, но нет location (обработка edge case)
         if (multerFile.key) {
-            console.log('Файл имеет key, но нет location. Генерируем URL из key:', multerFile.key);
             const url = getSelectelPublicUrl(multerFile.key);
             return {
                 url,
@@ -207,8 +231,13 @@ export class FileStorageService {
             };
         }
 
-        console.error('Multer file structure:', multerFile);
-        throw new Error(`Не поддерживаемый тип хранения multer файла. location: ${multerFile.location}, key: ${multerFile.key}, buffer: ${!!multerFile.buffer}`);
+        throw new AppError(400, FILE_STORAGE_MESSAGES.ERROR.UNSUPPORTED_FILE_FORMAT, {
+            hasLocation: !!multerFile.location,
+            hasKey: !!multerFile.key,
+            hasBuffer: !!multerFile.buffer,
+            originalName: multerFile.originalname,
+            mimetype: multerFile.mimetype
+        });
     }
 
     /**
@@ -216,48 +245,44 @@ export class FileStorageService {
      */
     async deleteFile(fileUrl: string): Promise<void> {
         if (!isSelectelConfigured() || !this.s3Client) {
-            console.log('Selectel не настроен, пропускаем удаление файла');
             return;
         }
 
         if (!fileUrl || fileUrl.startsWith('mock://')) {
-            console.log('Mock URL или пустой URL, пропускаем удаление:', fileUrl);
             return;
         }
 
         try {
-            console.log(`Попытка удаления файла: ${fileUrl}`);
-
             let key: string;
 
             if (fileUrl.startsWith('https://')) {
                 const url = new URL(fileUrl);
                 key = url.pathname.substring(1);
-                console.log(`Извлечен ключ из URL: ${key}`);
             } else if (fileUrl.includes('best-courses-ever/')) {
                 key = fileUrl;
-                console.log(`Используется как ключ: ${key}`);
             } else {
                 key = fileUrl;
-                console.log(`Простой ключ: ${key}`);
             }
 
             if (key.startsWith(`${config.selectel.bucketName}/`)) {
                 key = key.replace(`${config.selectel.bucketName}/`, '');
-                console.log(`Очищенный ключ: ${key}`);
             }
 
-            console.log(`Удаление из S3 по ключу: ${key}`);
+            const s3Client = this.getS3Client();
 
             const command = new DeleteObjectCommand({
                 Bucket: config.selectel.bucketName,
                 Key: key,
             });
 
-            const result = await this.s3Client.send(command);
-            console.log(`Файл успешно удален из S3: ${key}`);
+            await s3Client.send(command);
+
         } catch (error) {
-            console.error('Ошибка при удалении файла из S3:', error);
+            throw new AppError(500, FILE_STORAGE_MESSAGES.ERROR.DELETE_FAILED, {
+                fileUrl,
+                originalError: this.getErrorMessage(error),
+                stack: this.getErrorStack(error)
+            });
         }
     }
 }
